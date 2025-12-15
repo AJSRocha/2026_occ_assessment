@@ -2,34 +2,170 @@
 title: "main_catdyn"
 format: pdf
 editor: visual
+editor_options: 
+  chunk_output_type: console
 ---
 
 ## Data Specifications:
 
- * Data from 1995 - 2024
- 
- * Weekly time scale
- 
- * Aggregated from daily sales data in data_input.R
- 
- * Models fit with CatDyn
- 
- * For each year, best fit is mirrored in RTMB
+-   Data from 1995 - 2024
 
+-   Weekly time scale
 
-## Running Code
+-   Aggregated from daily sales data in data_input.R
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+-   Models fit with CatDyn
+
+-   For each year, best fit is mirrored in RTMB
+
+-   Mean Body Weight (MBW) model has been adjusted with data until 2023;
+
+## Things to clarify
+
+-  How are weeks defined? 7 days from 1st of January or Sunday to Sunday?
+
+-  How are 0-catch weeks handled?
+
+-  Formulation for the MBW model
+
+## Setup
 
 ```{r}
-1 + 1
+library(tidyverse)
+library(CatDyn)
+
+source('scripts/custom_catdyn_fit.R')
+source('scripts/custom_catdyn_bsd.R')
+source('scripts/funcoes_catdyn.R')
+
+load('.data/initial_data_occ_mbw.Rdata')
+
+
+distribuicoes = c("gamma", "lognormal","normal","negbin","aplnormal", "apnormal")
+optimizadores = c('CG', 'spg', 'BFGS', 'Nelder-Mead')
+
+
+count_na = function(x){
+  res = sum(!is.na(x))
+  return(res)
+}
+
 ```
 
-You can add options to executable code like this
+## 1995
 
 ```{r}
-#| echo: false
-2 * 2
+cat_df = as.CatDynData(x=df_effort %>%
+                         filter(as.numeric(
+                           as.character(year_sale)) %in% c(1995)),
+                       step="week",
+                       fleet.name="S",
+                       coleff=4,
+                       colcat=3,
+                       colmbw=8,
+                       unitseff="trips",
+                       unitscat="kg",
+                       unitsmbw="kg",
+                       nmult="thou",
+                       season.dates=c(as.Date("1995-01-01"),
+                                      last_date_of_week(1995, 52)-0))
+
+par = list(
+  logRt_scaled = log(500),
+  logalpha      = log(0.9),
+  logbeta       = log(0.9),
+  logK          = log(.00001),
+  logN0_scaled  = log(10000),
+  logM          = log(0.05),
+  logsdCt       = log(0.25 * sd(df_effort$catch[df_effort$catch>0]))  # consistent with CatDyn
+)
+
+exp_cat = 
+catdynexp(cat_df,
+          1,
+          c(par$logM, par$logN0_scaled, par$logRt_scaled, par$logK, par$logalpha, par$logbeta), 
+          c(head(cat_df$Data[[1]]$time.step,1),
+               48, #estimativa do timing da perturbacao
+              tail(cat_df$Data[[1]]$time.step,1)),
+          distr = 'aplnormal')
+
+fit_95 =
+  trialer(cat_df,
+          p = 1,
+          M = exp(par$logM),
+          N0.ini = exp(par$logN0_scaled),
+          P = 48,
+          P.ini  = as.list(exp(par$logRt_scaled)),
+          k.ini = exp(par$logK),
+          alpha.ini = exp(par$logalpha),
+          beta.ini  = exp(par$logbeta),
+          distr = distribuicoes[6],
+          method = optimizadores[2],
+          itnmax = 10000,
+          disp = list(10))
+
+
+gdm_log_95 = data_frame(distr = character(),
+                        methods = character())
+modelos_gdm_95 = list()
+for(i in distribuicoes){
+  for(j in optimizadores){
+    tryCatch({
+      modelos_gdm_95[[length(modelos_gdm_95)+1]] = 
+        trialer(cat_df,
+                p = 1,
+                M = exp(par$logM),
+                N0.ini = exp(par$logN0_scaled), #millions, as in nmult
+                P = 48,
+                P.ini  = as.list(exp(par$logRt_scaled)),
+                k.ini = exp(par$logK),
+                alpha.ini = exp(par$logalpha),
+                beta.ini  = exp(par$logbeta),
+                distr = i,
+                method = j,
+                itnmax = 10000,
+                disp = list(10))
+      gdm_log_95[nrow(gdm_log_95)+1,1] = i
+      gdm_log_95[nrow(gdm_log_95),2] = j
+    },
+    error=function(e){print(paste(i,j))
+    })
+  }
+}
+
+resultados_95 = lapply(modelos_gdm_95, function(x){x$fit})
+pred_95 = lapply(modelos_gdm_95, function(x){x$pred})
+sum_95 = 
+CatDynSum(x=resultados_95,
+          season=1995,
+          method=gdm_log_95$methods) 
+sum_95$check = rowSums(is.na(sum_95))
+
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+```{r}
+plot(cat_df,
+     mark = T,
+     offset = c(0,1,10),
+     hem = 'N')
+
+ggplot() + 
+  geom_line(aes(x = 1:53,
+                y = exp_cat$Model$Results$Predicted.Catch.thou),
+            col = 'red',
+            linetype = 'dashed') + 
+    geom_line(aes(x = 1:53,
+                y = exp_cat$Model$Results$Observed.Catch.thou)) + theme_bw()
+
+plotador(cat_df,
+         fit_95,
+         pre = F,
+         post1 = F,
+         post2 = T)
+
+CatDyn::CatDynCor(resultados_95,
+                  ttl = paste(sum_95$Distribution, sum_95$Method),
+                  method = sum_95$Method,
+                  arr = c(4,4))
+```
+
