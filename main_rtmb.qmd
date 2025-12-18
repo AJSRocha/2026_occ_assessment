@@ -1,0 +1,230 @@
+---
+title: "main_rtmb"
+format: pdf
+editor: source
+editor_options: 
+  chunk_output_type: console
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(CatDyn)
+library(RTMB)
+library(RTMBdist)
+
+source('scripts/custom_catdyn_fit.R')
+source('scripts/custom_catdyn_bsd.R')
+source('scripts/funcoes_catdyn.R')
+
+load('.data/initial_data_occ_mbw.Rdata')
+
+
+distribuicoes = c("gamma", "lognormal","normal","negbin","aplnormal", "apnormal")
+optimizadores = c('CG', 'spg', 'BFGS', 'Nelder-Mead')
+
+
+count_na = function(x){
+  res = sum(!is.na(x))
+  return(res)
+}
+
+report_manual = function(p, method, dates,
+                         distr, fleet.name, par.tmp,
+                         opt_result){
+  results2 = vector("list", length(method))
+  names(results2) = method
+  temp = attr(opt_result, "details")
+  for (i in 1:length(method)) {
+    results2[[i]]$Type <- p
+    results2[[i]]$Dates <- dates
+    names(results2[[i]]$Dates) <- c("ts.start",
+                                    paste0('ts.', seq(1:p)),
+                                    "ts.end")
+    results2[[i]]$Distr <- distr
+    par.names <- c("M", "N0", paste0('P', seq(1:p), ".", rep(fleet.name,p)),
+                   paste(c("k.", "alpha.", "beta."), fleet.name, sep = ""))
+    
+    if (distr %in% c("negbin", "normal" ,
+                     "lognormal",  "gamma",
+                     "roblognormal", "gumbel")) {
+      par.names <- c(par.names, paste("psi.", fleet.name, 
+                                      sep = ""))
+    }
+    
+    results2[[i]]$converg <- "FAIL"
+    results2[[i]]$kkt <- NA
+    results2[[i]]$AIC <- NA
+    results2[[i]]$bt.par <- NA
+    results2[[i]]$num.grads <- NA
+    results2[[i]]$bt.stdev <- NA
+    results2[[i]]$Cor <- matrix(NA, length(par.names), 
+                                length(par.names))
+    
+    print("NAs in the Hessian?")
+    print(any(is.na(temp[i,]$nhatend)))
+    print("Heuristic check of condition")
+    print(1/kappa(temp[i,]$nhatend) > 1e-15)
+    
+    if (length(temp[i, ]$ngatend) == length(par.names) & 
+        !any(is.na(temp[i, ]$nhatend)) & 1/kappa(temp[i, 
+        ]$nhatend) > 1e-15) {
+      results2[[i]]$converg <- opt_result[i, sum(lengths(par.tmp)) + 
+                                            5]
+      results2[[i]]$kkt <- opt_result[i, (sum(lengths(par.tmp)) + 
+                                            6):(sum(lengths(par.tmp)) + 7)]
+      results2[[i]]$AIC <- 2 * sum(lengths(par.tmp)) + 2 * 
+        opt_result[i, sum(lengths(par.tmp)) + 1]
+      results2[[i]]$bt.par <- exp(opt_result[i, (1:sum(lengths(par.tmp)))])
+      results2[[i]]$num.grads <- temp[i, ]$ngatend
+      
+      v <- matrix(0, length(par.names), length(par.names))
+      
+      if (distr %in% c("poisson",  "apnormal", "aplnormal")) {
+        v <- deltamethod(
+          g = lapply(paste0('~exp(x', 1:sum(lengths(par.tmp)), ')'), as.formula),
+          mean = as.numeric(opt_result[i, 1:sum(lengths(par.tmp))]),
+          cov = try(solve(temp[i, ]$nhatend)),
+          ses = FALSE
+        )
+      }
+      else {
+        # consertar isto!!!
+        v <- deltamethod(
+          g = lapply(paste0('~exp(x', seq_along(sum(lengths(par.tmp))), ')'), as.formula),
+          mean = as.numeric(opt_result[i, 1:sum(lengths(par.tmp))]),
+          cov = try(solve(temp[i, ]$nhatend)),
+          ses = FALSE
+        )
+      }
+      results2[[i]]$bt.stdev <- sqrt(diag(v))
+      results2[[i]]$Cor <- cor(v)
+      names(results2[[i]]$num.grads) <- par.names
+      names(results2[[i]]$bt.par) <- par.names
+      names(results2[[i]]$bt.stdev) <- par.names
+      colnames(results2[[i]]$Cor) <- par.names
+      rownames(results2[[i]]$Cor) <- par.names 
+    } else {print('convergencia e meio merdosa')}}
+  return(results2)}
+
+
+```
+
+## 1995
+
+```{r}
+cat_df = as.CatDynData(x=df_effort %>%
+                         filter(as.numeric(
+                           as.character(year_sale)) %in% c(1995)),
+                       step="week",
+                       fleet.name="S",
+                       coleff=4,
+                       colcat=3,
+                       colmbw=8,
+                       unitseff="trips",
+                       unitscat="kg",
+                       unitsmbw="kg",
+                       nmult="thou",
+                       season.dates=c(as.Date("1995-01-01"),
+                                      last_date_of_week(1995, 52)-0))
+
+plot(cat_df,
+     mark = T,
+     offset = c(0,1,10),
+     hem = 'N')
+
+
+par = list(
+  logRt_scaled = log(500),
+  # logEt_scaled = log(500),
+  logalpha      = log(.95),
+  logbeta       = log(.95),
+  logK          = log(.00001),
+  logN0_scaled  = log(8000),
+  logM          = log(0.05),
+  logsdCt       = log(0.25 * sd(df_effort$catch[df_effort$catch>0]))  # consistent with CatDyn
+)
+
+#| results: hide
+#| warning: false
+#| echo: false
+
+nmult = 1e3
+dat = list()
+dat$Ct = as.vector(cat_df$Data$`S`$obscat.thou)         # observed catch
+dat$Et = as.vector(cat_df$Data$`S`$obseff.trips)       # effort
+dat$u = unlist(indice_manual)                   # recruitment pulse months
+nT = length(dat$Ct)
+nR = length(dat$u)
+
+
+I = matrix(0, nrow = nT, ncol = nR)
+for (j in 1:nR) {
+  I[(dat$u[j]-1):nT, j] <- 1 # -1 foi adicionado para ficar consistente com CatDyn.
+}
+
+dat$I = I
+
+# Initial parameter values
+par # already defined on catdyn chunk
+
+# initialize joint negative loglikelihood function
+
+jnll = function(par) {
+  getAll(par, dat)
+
+  # Extract parameters
+  Ct     = OBS(Ct)
+  Et     = OBS(Et)
+  I  = OBS(I)
+  alpha  = exp(logalpha)
+  beta   = exp(logbeta)
+  K      = exp(logK)
+  N0     = exp(logN0_scaled)
+  M      = exp(logM)
+  # sdCt   = exp(logsdCt)
+  Rt     = exp(logRt_scaled)
+
+  jnll = 0
+  # Initialize predicted catch and biomass
+
+
+  #comprimento = length(Ct)
+nstep <- vector("numeric", nT) * alpha#init vector
+mccum = vector("numeric", nT) * alpha
+effeff1 = vector("numeric", nT) * alpha
+effn1 = vector("numeric", nT) * alpha
+predcat = vector("numeric", nT) * alpha
+
+
+  mccum[1] = 0
+  nstep[1] <- N0 * exp(-M)
+  for(i in 2:nT){
+    mccum[i] = Ct[i-1] + mccum[i-1] * exp(-M)
+    nstep[i] = N0 * exp(-M*i) + 
+      sum(I[i,] * Rt * exp(-M*(i-(dat$u-1)+1))) -
+      mccum[i] * exp(-M/2)
+    effeff1 <- Et^(alpha)
+    effn1 <- nstep^(beta)
+    predcat <- K * (effeff1 * effn1) * exp(-M/2)
+  }
+  
+  # Negative log-likelihood
+  # jnll = -sum(dnorm(Ct, mean = predcat, sd = sdCt, log = TRUE))
+  
+  #adjusted normal profile version
+  # jnll = sum(((Ct - predcat)^2)/1^2) # 1 passa para sdCt - 
+  
+  
+  jnll = sum(dnbinom2(Ct, predcat, log = T))
+  # if (is.null(Rt)) stop("Rt is NULL — check if Rt_scaled was passed correctly.")
+    REPORT(predcat)
+    REPORT(nstep)
+  jnll
+
+}
+
+
+```
+

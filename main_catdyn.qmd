@@ -1,7 +1,7 @@
 ---
 title: "main_catdyn"
 format: pdf
-editor: visual
+editor: source
 editor_options: 
   chunk_output_type: console
 ---
@@ -22,11 +22,11 @@ editor_options:
 
 ## Things to clarify
 
--  How are weeks defined? 7 days from 1st of January or Sunday to Sunday?
+-   How are weeks defined? 7 days from 1st of January or Sunday to Sunday?
 
--  How are 0-catch weeks handled?
+-   How are 0-catch weeks handled?
 
--  Formulation for the MBW model
+-   Formulation for the MBW model
 
 ## Setup
 
@@ -70,12 +70,19 @@ cat_df = as.CatDynData(x=df_effort %>%
                        season.dates=c(as.Date("1995-01-01"),
                                       last_date_of_week(1995, 52)-0))
 
+plot(cat_df,
+     mark = T,
+     offset = c(0,1,10),
+     hem = 'N')
+
+
 par = list(
   logRt_scaled = log(500),
-  logalpha      = log(0.9),
-  logbeta       = log(0.9),
+  # logEt_scaled = log(500),
+  logalpha      = log(.95),
+  logbeta       = log(.95),
   logK          = log(.00001),
-  logN0_scaled  = log(10000),
+  logN0_scaled  = log(8000),
   logM          = log(0.05),
   logsdCt       = log(0.25 * sd(df_effort$catch[df_effort$catch>0]))  # consistent with CatDyn
 )
@@ -83,13 +90,24 @@ par = list(
 exp_cat = 
 catdynexp(cat_df,
           1,
-          c(par$logM, par$logN0_scaled, par$logRt_scaled, par$logK, par$logalpha, par$logbeta), 
+          c(par$logM, par$logN0_scaled, 
+            par$logRt_scaled,
+            # par$logEt_scaled, 
+            par$logK, par$logalpha, par$logbeta), 
           c(head(cat_df$Data[[1]]$time.step,1),
                48, #estimativa do timing da perturbacao
               tail(cat_df$Data[[1]]$time.step,1)),
           distr = 'aplnormal')
 
-fit_95 =
+ggplot() + 
+  geom_line(aes(x = 1:53,
+                y = exp_cat$Model$Results$Predicted.Catch.thou),
+            col = 'red',
+            linetype = 'dashed') + 
+    geom_line(aes(x = 1:53,
+                y = exp_cat$Model$Results$Observed.Catch.thou)) + theme_bw()
+
+fit_test =
   trialer(cat_df,
           p = 1,
           M = exp(par$logM),
@@ -104,6 +122,11 @@ fit_95 =
           itnmax = 10000,
           disp = list(10))
 
+plotador(cat_df,
+         fit_test,
+         pre = F,
+         post1 = F,
+         post2 = T)
 
 gdm_log_95 = data_frame(distr = character(),
                         methods = character())
@@ -141,31 +164,21 @@ CatDynSum(x=resultados_95,
           method=gdm_log_95$methods) 
 sum_95$check = rowSums(is.na(sum_95))
 
-```
+CatDyn::CatDynCor(resultados_95,
+                  ttl = paste(sum_95$Distribution, sum_95$Method),
+                  method = sum_95$Method,
+                  arr = c(4,6))
 
-```{r}
-plot(cat_df,
-     mark = T,
-     offset = c(0,1,10),
-     hem = 'N')
-
-ggplot() + 
-  geom_line(aes(x = 1:53,
-                y = exp_cat$Model$Results$Predicted.Catch.thou),
-            col = 'red',
-            linetype = 'dashed') + 
-    geom_line(aes(x = 1:53,
-                y = exp_cat$Model$Results$Observed.Catch.thou)) + theme_bw()
+# Modelo escolhido
+fit_95 = modelos_gdm_95[[which(sum_95$Method == 'Nelder-Mead' & sum_95$Distribution == 'negbin')]]
 
 plotador(cat_df,
          fit_95,
          pre = F,
-         post1 = F,
-         post2 = T)
+         post1 = T,
+         post2 = F)
 
-CatDyn::CatDynCor(resultados_95,
-                  ttl = paste(sum_95$Distribution, sum_95$Method),
-                  method = sum_95$Method,
-                  arr = c(4,4))
 ```
+
+
 
